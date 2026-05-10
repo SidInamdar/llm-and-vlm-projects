@@ -216,3 +216,46 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── ML project: large assets ──────────────────────────────────────────────────
+# Ignore all file contents under data/ and models/checkpoints/,
+# but keep READMEs and .gitkeep placeholder files.
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/raw/README.md
+!data/processed/README.md
+!data/README.md
+
+models/checkpoints/*
+!models/checkpoints/.gitkeep
+!models/README.md
+
+# ── ML experiment tracking ────────────────────────────────────────────────────
+wandb/
+mlruns/
+runs/
+lightning_logs/
+outputs/           # hydra default output dir
+
+# ── HuggingFace cache ─────────────────────────────────────────────────────────
+.cache/huggingface/
+
+# ── DVC ───────────────────────────────────────────────────────────────────────
+/tmp/
+
+# ── CUDA / compiled extensions ────────────────────────────────────────────────
+*.ptx
+*.cubin
+*.fatbin
+
+# ── Triton cache ──────────────────────────────────────────────────────────────
+.triton/
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.ckpt
+*.safetensors
+*.bin
+*.pt
+# (keep model configs in models/configs/ — those are plain YAML/JSON, commit them)

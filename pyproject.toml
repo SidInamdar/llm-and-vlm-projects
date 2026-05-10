@@ -1,0 +1,45 @@
+[project]
+name = "llm-and-vlm-projects"
+version = "0.1.0"
+description = "LLM and VLM research monorepo — shared utilities and project experiments"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.11.0",
+    "transformers>=5.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+    "pytest>=8",
+    "ipykernel>=6",
+]
+
+# Make `shared/` importable as `from shared.xxx import ...`
+# when running via `uv run` from the repo root.
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["shared"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["shared"]
