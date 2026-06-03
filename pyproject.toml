@@ -5,8 +5,11 @@ description = "LLM and VLM research monorepo — shared utilities and project ex
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "datasets>=4.8.5",
+    "matplotlib>=3.10.9",
     "torch>=2.11.0",
     "transformers>=5.8.0",
+    "wandb>=0.26.1",
 ]
 
 [project.optional-dependencies]
@@ -42,4 +45,4 @@ target-version = "py312"
 select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
-testpaths = ["shared"]
+testpaths = ["shared/tests"]

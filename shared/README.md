@@ -8,9 +8,11 @@ Cross-project utilities. Anything that would otherwise be copy-pasted between pr
 
 | Module | Purpose |
 |--------|---------|
-| `dataloaders/` | Generic dataset wrappers, collation functions, samplers |
-| `metrics/` | Evaluation metrics (perplexity, ROUGE, VQA accuracy, …) |
-| `viz/` | Plotting helpers, attention maps, weight distribution charts |
+| `mlm_dataset.py` | Tokenises sentences into a HuggingFace Dataset for MLM training |
+| `clm_dataset_download.py` | Generic dataset downloader with registry (Bitext, MultiWOZ) |
+| `roberta.py` | Download, save, and reload RoBERTa model + tokenizer |
+| `metrics.py` | MLM perplexity and token-length distribution analysis |
+| `mlm_benchmark.py` | Verification sentence mining and fill-mask benchmarking |
 
 ---
 
@@ -18,9 +20,14 @@ Cross-project utilities. Anything that would otherwise be copy-pasted between pr
 
 ```python
 # In any project script
-from shared.dataloaders import CaptionDataset
-from shared.metrics import vqa_accuracy
-from shared.viz import plot_attention
+from shared import tokenise_sentences, load_roberta
+from shared import compute_mlm_perplexity, token_length_distribution
+from shared import mine_verification_sentences, run_benchmarks
+from shared import download_dataset
+
+# Or import from specific modules
+from shared.metrics import compute_mlm_perplexity
+from shared.roberta import load_roberta
 ```
 
 The repo root must be on `PYTHONPATH`, or you run via `uv run` from the repo root (preferred).
@@ -32,4 +39,4 @@ The repo root must be on `PYTHONPATH`, or you run via `uv run` from the repo roo
 - `shared/` **must not** import from `projects/` — dependency flows one way only.
 - Keep modules small and focused. If something is only used by one project, it belongs in that project.
 - Every public function should have a docstring and type hints.
-- Add tests under `shared/<module>/tests/` when logic is non-trivial.
+- Add tests under `shared/tests/` when logic is non-trivial.
