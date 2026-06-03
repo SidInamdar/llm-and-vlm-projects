@@ -11,23 +11,24 @@ A monorepo for LLM and VLM research projects. Data and model weights are **share
 ```
 repo/
 ├── projects/          ← one directory per experiment / paper
-│   ├── vlm_quantization/
-│   └── llm_routing/
+│   └── llama-sft/
 │
-├── data/              ← NOT tracked by git (see data/README.md)
+├── datasets/          ← entirely git-ignored; created on the fly
 │   ├── raw/
 │   └── processed/
 │
-├── models/            ← NOT tracked by git (see models/README.md)
+├── models/            ← entirely git-ignored; created on the fly
 │   ├── checkpoints/
-│   └── configs/
+│   ├── configs/
+│   └── tokenizers/
 │
-├── shared/            ← utilities reused across projects
-│   ├── dataloaders/
-│   ├── metrics/
-│   └── viz/
-│
-└── notebooks/         ← exploration only; no imports from projects/
+└── shared/            ← flat utility modules reused across projects
+    ├── mlm_dataset.py
+    ├── clm_dataset_download.py
+    ├── roberta.py
+    ├── metrics.py
+    ├── mlm_benchmark.py
+    └── tests/
 ```
 
 ## Key Conventions
@@ -35,9 +36,8 @@ repo/
 | Rule | Rationale |
 |------|-----------|
 | Each project is self-contained under `projects/<name>/` | Namespacing prevents experiment bleed |
-| `data/` and `models/` are git-ignored | Use DVC / HF Hub / S3 for assets |
+| `datasets/` and `models/` are entirely git-ignored | Use project scripts to download on the fly |
 | `shared/` is the only cross-project import boundary | No copy-pasting utilities |
-| `notebooks/` never imports from `projects/` | One-way dependency only |
 
 ## Getting Started
 
@@ -49,10 +49,10 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 
 # Run a project script
-uv run python projects/vlm_quantization/train.py
+uv run python projects/llama-sft/dataset-download.py --dataset all
 ```
 
 ## Asset Management
 
 Large files (datasets, checkpoints) are tracked via **DVC** or stored on **HuggingFace Hub**.
-See [`data/README.md`](data/README.md) and [`models/README.md`](models/README.md) for download instructions.
+These directories are entirely git-ignored and populated on the fly by project download scripts.

@@ -218,19 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 # ── ML project: large assets ──────────────────────────────────────────────────
-# Ignore all file contents under data/ and models/checkpoints/,
-# but keep READMEs and .gitkeep placeholder files.
-data/raw/*
-data/processed/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/raw/README.md
-!data/processed/README.md
-!data/README.md
-
-models/checkpoints/*
-!models/checkpoints/.gitkeep
-!models/README.md
+# Ignore everything under datasets/ and models/ — these are downloaded on the fly.
+datasets/
+models/
 
 # ── ML experiment tracking ────────────────────────────────────────────────────
 wandb/
@@ -258,4 +248,3 @@ outputs/           # hydra default output dir
 *.safetensors
 *.bin
 *.pt
-# (keep model configs in models/configs/ — those are plain YAML/JSON, commit them)
