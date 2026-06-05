@@ -2,6 +2,7 @@ import os
 from typing import Any
 
 import requests
+from huggingface_hub import snapshot_download
 
 from datasets import Dataset, DatasetDict, load_dataset
 
@@ -198,6 +199,69 @@ DATASET_REGISTRY: dict[str, Any] = {
 }
 
 
+# ── Model download ────────────────────────────────────────────────────────────
+
+def download_model(
+    repo_id: str,
+    models_dir: str,
+    hf_token: str | None = None,
+) -> None:
+    """
+    Download a HuggingFace model and its tokenizer to the local models/ directory.
+
+    Weights are saved to:   <models_dir>/checkpoints/<model-slug>/
+    Tokenizer is saved to:  <models_dir>/tokenizers/<model-slug>/
+
+    The model slug is the repo_id with '/' replaced by '--', e.g.
+    'meta-llama/Llama-3.1-8B-Instruct' → 'meta-llama--Llama-3.1-8B-Instruct'.
+
+    Uses ``huggingface_hub.snapshot_download`` so no GPU or torch is required
+    at download time — safe to call in the CPU dataset-prep stage.
+
+    Args:
+        repo_id:    HuggingFace model repo ID, e.g. 'meta-llama/Llama-3.1-8B-Instruct'.
+        models_dir: Root models directory (e.g. llm-and-vlm-projects/models/).
+        hf_token:   Optional HuggingFace token for gated models (reads
+                    HF_TOKEN env var automatically if not provided).
+    """
+    from transformers import AutoTokenizer
+
+    slug = repo_id.replace("/", "--")
+    weights_dir = os.path.join(models_dir, "checkpoints", slug)
+    tokenizer_dir = os.path.join(models_dir, "tokenizers", slug)
+
+    # ── Model weights ─────────────────────────────────────────────────────────
+    if os.path.isdir(weights_dir) and any(
+        f.endswith((".safetensors", ".bin", ".pt")) for f in os.listdir(weights_dir)
+    ):
+        print(f"Model weights already present at {weights_dir} — skipping download.")
+    else:
+        print(f"Downloading model weights: {repo_id}")
+        print(f"  → destination: {weights_dir}")
+        os.makedirs(weights_dir, exist_ok=True)
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=weights_dir,
+            token=hf_token or os.environ.get("HF_TOKEN"),
+            ignore_patterns=["*.msgpack", "flax_model*", "tf_model*", "rust_model*"],
+        )
+        print(f"  ✓ Weights saved to {weights_dir}")
+
+    # ── Tokenizer ─────────────────────────────────────────────────────────────
+    if os.path.isdir(tokenizer_dir) and os.listdir(tokenizer_dir):
+        print(f"Tokenizer already present at {tokenizer_dir} — skipping download.")
+    else:
+        print(f"Downloading tokenizer: {repo_id}")
+        print(f"  → destination: {tokenizer_dir}")
+        os.makedirs(tokenizer_dir, exist_ok=True)
+        tok = AutoTokenizer.from_pretrained(
+            repo_id,
+            token=hf_token or os.environ.get("HF_TOKEN"),
+        )
+        tok.save_pretrained(tokenizer_dir)
+        print(f"  ✓ Tokenizer saved to {tokenizer_dir}")
+
+
 def download_dataset(
     name: str,
     output_dir: str,
@@ -230,27 +294,67 @@ if __name__ == "__main__":
     import argparse
     from pathlib import Path
 
-    # Resolve output_dir relative to this file:
+    # Resolve paths relative to this file:
     # this file  → projects/llama-sft/download-datasets.py
     # repo root  → ../../  (llm-and-vlm-projects/)
-    # raw dir   → datasets/raw/
     _REPO_ROOT = Path(__file__).resolve().parents[2]
     _RAW_DIR = str(_REPO_ROOT / "datasets" / "raw")
+    _MODELS_DIR = str(_REPO_ROOT / "models")
 
-    parser = argparse.ArgumentParser(description="Download SFT datasets")
+    _DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+
+    parser = argparse.ArgumentParser(
+        description="Download SFT datasets and/or the base model from HuggingFace"
+    )
     parser.add_argument(
         "--dataset",
-        choices=["bitext", "multiwoz", "all"],
+        choices=["bitext", "multiwoz", "all", "none"],
         default="all",
-        help="Which dataset to download (default: all)",
+        help="Which dataset(s) to download (default: all; use 'none' to skip datasets)",
     )
     parser.add_argument(
         "--output-dir",
         default=_RAW_DIR,
         help=f"Root directory for raw datasets (default: {_RAW_DIR})",
     )
+    parser.add_argument(
+        "--model",
+        default=_DEFAULT_MODEL,
+        metavar="REPO_ID",
+        help=f"HuggingFace model repo ID to download (default: {_DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--models-dir",
+        default=_MODELS_DIR,
+        help=f"Root directory for model weights and tokenizers (default: {_MODELS_DIR})",
+    )
+    parser.add_argument(
+        "--no-model",
+        action="store_true",
+        help="Skip model download (datasets only)",
+    )
+    parser.add_argument(
+        "--hf-token",
+        default=None,
+        metavar="TOKEN",
+        help="HuggingFace token for gated models (falls back to HF_TOKEN env var)",
+    )
     args_cli = parser.parse_args()
 
-    targets = list(DATASET_REGISTRY.keys()) if args_cli.dataset == "all" else [args_cli.dataset]
-    for name in targets:
-        download_dataset(name=name, output_dir=args_cli.output_dir)
+    # ── Datasets ──────────────────────────────────────────────────────────────
+    if args_cli.dataset != "none":
+        targets = (
+            list(DATASET_REGISTRY.keys())
+            if args_cli.dataset == "all"
+            else [args_cli.dataset]
+        )
+        for name in targets:
+            download_dataset(name=name, output_dir=args_cli.output_dir)
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    if not args_cli.no_model:
+        download_model(
+            repo_id=args_cli.model,
+            models_dir=args_cli.models_dir,
+            hf_token=args_cli.hf_token,
+        )
