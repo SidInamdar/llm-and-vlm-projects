@@ -6,6 +6,7 @@ gradient health, activation norms — all logged to TensorBoard + MLflow.
 """
 
 import os, math, time
+from pathlib import Path
 import torch
 import numpy as np
 import mlflow
@@ -17,6 +18,11 @@ from peft import LoraConfig, get_peft_model, TaskType
 from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
 from torch.utils.tensorboard import SummaryWriter
 from datasets import load_from_disk
+
+# Resolve repo root relative to this file:
+# this file  → projects/llama-sft/llama31-sft-monitoring-pipeline.py
+# repo root  → ../../  (llm-and-vlm-projects/)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL_NAME  = "meta-llama/Llama-3.1-8B-Instruct"
@@ -72,7 +78,9 @@ initial_lora_norms = {
 # Pass in your already-prepared Dataset objects directly.
 # Both must have "instruction" and "response" columns.
 # Replace this with your actual dataset variable (74K samples, unsplit):
-full_dataset = load_from_disk('/home/siddhesh/Documents/repos/llm-and-vlm-projects/datasets/processed/bitext_multiwoz_sft_dataset')
+full_dataset = load_from_disk(
+    str(_REPO_ROOT / "datasets" / "processed" / "bitext_multiwoz_sft_dataset")
+)
 
 # Split — 95% train, 5% val — split BEFORE formatting so val is clean
 split       = full_dataset.train_test_split(test_size=0.05, seed=42)

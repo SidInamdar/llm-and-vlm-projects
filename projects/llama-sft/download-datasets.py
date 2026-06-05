@@ -226,5 +226,31 @@ def download_dataset(
         download_fn(output_dir)
 
 
-#download_dataset(name='bitext',output_dir='/home/siddhesh/Documents/repos/llm-and-vlm-projects/datasets/raw')
-download_dataset(name='multiwoz', output_dir='/home/siddhesh/Documents/repos/llm-and-vlm-projects/datasets/raw')
+if __name__ == "__main__":
+    import argparse
+    from pathlib import Path
+
+    # Resolve output_dir relative to this file:
+    # this file  → projects/llama-sft/download-datasets.py
+    # repo root  → ../../  (llm-and-vlm-projects/)
+    # raw dir   → datasets/raw/
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    _RAW_DIR = str(_REPO_ROOT / "datasets" / "raw")
+
+    parser = argparse.ArgumentParser(description="Download SFT datasets")
+    parser.add_argument(
+        "--dataset",
+        choices=["bitext", "multiwoz", "all"],
+        default="all",
+        help="Which dataset to download (default: all)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=_RAW_DIR,
+        help=f"Root directory for raw datasets (default: {_RAW_DIR})",
+    )
+    args_cli = parser.parse_args()
+
+    targets = list(DATASET_REGISTRY.keys()) if args_cli.dataset == "all" else [args_cli.dataset]
+    for name in targets:
+        download_dataset(name=name, output_dir=args_cli.output_dir)

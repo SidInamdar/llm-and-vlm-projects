@@ -1,7 +1,17 @@
+import os
+from pathlib import Path
 from datasets import Dataset, DatasetDict, load_from_disk
 
-multiwoz = load_from_disk("/home/siddhesh/Documents/repos/llm-and-vlm-projects/datasets/raw/multiwoz")
-bitext = load_from_disk('/home/siddhesh/Documents/repos/llm-and-vlm-projects/datasets/raw/bitext')
+# Resolve repo root relative to this file:
+# this file  → projects/llama-sft/llama31-sft-dataset-manipulation.py
+# repo root  → ../../  (llm-and-vlm-projects/)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DATASETS_RAW = _REPO_ROOT / "datasets" / "raw"
+_DATASETS_PROCESSED = _REPO_ROOT / "datasets" / "processed"
+_MODELS_DIR = _REPO_ROOT / "models"
+
+multiwoz = load_from_disk(str(_DATASETS_RAW / "multiwoz"))
+bitext = load_from_disk(str(_DATASETS_RAW / "bitext"))
 
 def multiwoz_to_instruction_response(dialogue_turns):
     """
@@ -55,13 +65,18 @@ from datasketch import MinHash, MinHashLSH
 token_limit = 580
 tokenizer = AutoTokenizer.from_pretrained(
     "meta-llama/Llama-3.1-8b",
-    cache_dir="/home/siddhesh/Documents/repos/llm-and-vlm-projects/models/tokenizers",
+    cache_dir=str(_MODELS_DIR / "tokenizers"),
 )
 
-urllib.request.urlretrieve(
-    "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin",
-    "lid.176.bin",
-)
+_LID_BIN_PATH = str(_REPO_ROOT / "datasets" / "lid.176.bin")
+os.makedirs(os.path.dirname(_LID_BIN_PATH), exist_ok=True)
+if not os.path.exists(_LID_BIN_PATH):
+    print("Downloading lid.176.bin language-detection model...")
+    urllib.request.urlretrieve(
+        "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin",
+        _LID_BIN_PATH,
+    )
+    print(f"Saved lid.176.bin to {_LID_BIN_PATH}")
 #english_detect_model = fasttext.load_model("lid.176.bin")
 from lingua import Language, LanguageDetectorBuilder
 english_detect_algo = LanguageDetectorBuilder.from_languages(
@@ -150,4 +165,4 @@ filtered_ds = combined_dataset.filter(wc_filter_function)\
 # dedup dataset
 deduped_dataset = dedup_dataset(filtered_ds)
 
-deduped_dataset.save_to_disk("/home/siddhesh/Documents/repos/llm-and-vlm-projects/datasets/processed/bitext_multiwoz_sft_dataset"   )
+deduped_dataset.save_to_disk(str(_DATASETS_PROCESSED / "bitext_multiwoz_sft_dataset"))
