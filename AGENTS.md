@@ -142,3 +142,46 @@ When starting work in this repo, read in order:
 2. `README.md` — high-level overview
 3. `projects/<target>/README.md` — the specific experiment you are working on
 4. `shared/README.md` — available utilities
+
+---
+
+## SLURM Job Naming Convention
+
+**All SLURM job names MUST be `foobar`.** Every `#SBATCH --job-name=` directive in
+every SLURM script must use `foobar` — no exceptions, regardless of the project
+or experiment name. This is a hard requirement.
+
+```bash
+# ✓ Correct — always
+#SBATCH --job-name=foobar
+
+# ✗ Wrong — never use project-specific names
+#SBATCH --job-name=sft_train
+#SBATCH --job-name=ppo_qwen25
+```
+
+---
+
+## Offline Downloads (Air-Gapped GPU Nodes)
+
+**GPU compute nodes do NOT have internet access.** Every project that uses
+HuggingFace models or datasets MUST include a pre-download bash script under
+`job_run_scripts/<project>/` that:
+
+1. Uses `hf download` to fetch all models and datasets.
+2. Saves them to their expected local paths under `models/checkpoints/` and
+   `datasets/raw/` (using the `Org--ModelName` naming convention).
+3. Is designed to run on a login node **before** submitting the SLURM job.
+4. Skips downloads if the target directory already exists and is non-empty.
+
+**Pattern**: See `job_run_scripts/qwen25-rlhf-ppo/qwen25-ppo-download.sh` for
+the reference implementation.
+
+When creating a new project, always:
+- Identify all HuggingFace model/dataset dependencies from the Python code.
+- Create a `<project>-download.sh` script following the pattern above.
+- Ensure all Python scripts check for local paths first (e.g.,
+  `_LOCAL_POLICY = repo_root / "models" / "checkpoints" / "Org--ModelName"`),
+  falling back to Hub identifiers only if the local copy is missing.
+- Document the download step in the project README and the SLURM run script.
+
