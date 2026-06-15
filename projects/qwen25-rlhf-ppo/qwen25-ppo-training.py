@@ -86,7 +86,8 @@ def main() -> None:
 
     model_path = str(_LOCAL_POLICY) if _LOCAL_POLICY.exists() else POLICY_MODEL_HUB
     save_dir = CHECKPOINTS_DIR / f"qwen25-7b-{args.run_name}"
-    tb_log_dir = str(_PROJECT_DIR / "logs" / f"tb-{args.run_name}")
+    tb_log_base = os.environ.get("TB_LOG_BASE", str(_PROJECT_DIR / "logs"))
+    tb_log_dir = str(Path(tb_log_base) / f"tb-{args.run_name}")
 
     # ── 1. Tokenizer ──────────────────────────────────────────────────────────
     print(f"\n[1/7] Loading tokenizer from {model_path}...")

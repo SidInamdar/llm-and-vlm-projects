@@ -43,7 +43,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_NAME  = str(_REPO_ROOT / "models" / "checkpoints" / "meta-llama--Llama-3.1-8B-Instruct")
 OUTPUT_DIR  = "./checkpoints/cs-chatbot-lora"
 MAX_SEQ_LEN = 512
-TB_LOG_DIR  = "./logs/tb"
+TB_LOG_DIR  = os.environ.get("TB_LOG_DIR", "./logs/tb")
 RUN_NAME    = "lora-r64-lr2e4-ep3"
 
 # Llama 3 assistant header — marks where response starts for loss masking
