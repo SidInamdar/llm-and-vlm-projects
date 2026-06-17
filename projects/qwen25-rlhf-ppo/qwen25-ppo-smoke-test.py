@@ -170,6 +170,7 @@ def main() -> None:
     ppo_config = PPOConfig(
         learning_rate=1e-5,
         per_device_train_batch_size=BATCH_SIZE,
+        mini_batch_size=MINI_BATCH_SIZE,
         num_ppo_epochs=2,
         gamma=1.0,
         cliprange=0.2,
