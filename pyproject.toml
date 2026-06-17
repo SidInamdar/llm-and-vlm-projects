@@ -5,20 +5,20 @@ description = "LLM and VLM research monorepo — shared utilities and project ex
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "datasets>=4.8.5",
-    "datasketch>=1.10.0",
+    "datasets==5.0.0",
+    "datasketch==1.10.0",
     "datatrove>=0.8.0",
     "fasttext>=0.9.3",
-    "lingua-language-detector>=2.2.0",
-    "matplotlib>=3.10.9",
-    "mlflow>=3.13.0",
-    "nltk>=3.9.4",
-    "peft>=0.19.1",
-    "tensorboard>=2.20.0",
-    "torch>=2.11.0",
-    "transformers>=5.8.0",
-    "trl>=1.5.1",
-    "wandb>=0.26.1",
+    "lingua-language-detector==2.2.0",
+    "matplotlib==3.10.8",
+    "mlflow==3.13.0",
+    "nltk==3.9.4",
+    "peft==0.18.1",
+    "tensorboard==2.20.0",
+    "torch==2.9.1",
+    "transformers==4.57.3",
+    "trl==1.5.1",
+    "wandb==0.26.1",
 ]
 
 [project.optional-dependencies]
