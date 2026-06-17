@@ -49,6 +49,12 @@ class RewardModelWrapper(nn.Module):
         self.policy_tokenizer = policy_tokenizer
         self.device = device
 
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.reward_model, name)
+
     def forward(self, input_ids, attention_mask=None, **kwargs):
         # Decode policy tokens
         full_texts = self.policy_tokenizer.batch_decode(input_ids, skip_special_tokens=True)
