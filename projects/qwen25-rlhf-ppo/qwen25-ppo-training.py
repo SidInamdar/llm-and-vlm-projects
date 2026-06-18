@@ -82,6 +82,7 @@ class RewardModelWrapper(nn.Module):
             rewards = outputs.logits
         
         rewards_expanded = rewards.unsqueeze(1).expand(-1, input_ids.shape[1], -1)
+        rewards_expanded = rewards_expanded.to(input_ids.device)
         
         from types import SimpleNamespace
         return SimpleNamespace(hidden_states=[rewards_expanded])
