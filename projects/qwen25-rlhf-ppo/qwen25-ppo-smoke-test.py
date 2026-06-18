@@ -21,7 +21,7 @@ def load_reward_model() -> tuple[AutoModelForSequenceClassification, AutoTokeniz
         REWARD_MODEL_PATH,
         num_labels=1,
         torch_dtype=torch.float16,
-        device_map={"": "cuda:0"},
+        device_map={"": "cuda:1"},
     )
 
     reward_model.eval()
@@ -107,7 +107,7 @@ policy_model = AutoModelForCausalLM.from_pretrained(
 value_model = AutoModelForSequenceClassification.from_pretrained(
     POLICY_MODEL_PATH,
     num_labels=1,
-    device_map={"": "cuda:0"},
+    device_map={"": "cuda:1"},
     torch_dtype=torch.float16,)
 value_model.config.pad_token_id = policy_tokenizer.eos_token_id
 
