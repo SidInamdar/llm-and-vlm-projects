@@ -1,63 +1,96 @@
-"""
-qwen25-ppo-training.py
-Full 7B 2-GPU RLHF PPO training pipeline.
-
-GPU 0 : reward model (DeBERTa, frozen) + reference model (Qwen2.5-7B, fp16, frozen)
-GPU 1 : policy model  (Qwen2.5-7B + LoRA + value head)
-
-Runs ``--num-steps`` PPO steps (default 300) and saves the LoRA adapter.
-
-Usage:
-    # Main run (KL regularised)
-    python qwen25-ppo-training.py --init-kl-coef 0.2 --run-name ppo-main
-
-    # Ablation run (no KL — expect reward hacking / degenerate outputs)
-    python qwen25-ppo-training.py --init-kl-coef 0.0 --run-name ppo-ablation
-"""
-
 import argparse
-import importlib.util
 import os
 import sys
 import time
-from pathlib import Path
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
 import mlflow
 import torch
+import torch.nn as nn
 from datasets import load_from_disk
-from peft import LoraConfig
-from torch.utils.tensorboard import SummaryWriter
-from transformers import AutoTokenizer
-from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
+from peft import LoraConfig, get_peft_model
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
+from trl.experimental.ppo import PPOTrainer, PPOConfig
 
-# ── Import reward wrapper from sibling file ───────────────────────────────────
-_PROJECT_DIR = Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location(
-    "reward_wrapper", str(_PROJECT_DIR / "qwen25-ppo-reward-wrapper.py")
-)
-_reward_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_reward_mod)
-load_reward_model = _reward_mod.load_reward_model
-compute_rewards = _reward_mod.compute_rewards
+# ── Paths relative to parent foobar directory ─────────────────────────────────
+REWARD_MODEL_PATH = "llm-and-vlm-projects/models/checkpoints/OpenAssistant--reward-model-deberta-v3-large-v2"
+REWARD_MODEL_LENGTH = 512
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-TRAIN_PROMPTS_PATH = _REPO_ROOT / "datasets" / "processed" / "alpaca_ppo_prompts"
-CHECKPOINTS_DIR = _REPO_ROOT / "models" / "checkpoints"
+POLICY_MODEL_NAME = "Qwen--Qwen2.5-7B-Instruct"
+POLICY_MODEL_PATH = f"llm-and-vlm-projects/models/checkpoints/{POLICY_MODEL_NAME}"
 
-# ── Model identifiers ────────────────────────────────────────────────────────
-POLICY_MODEL_HUB = "Qwen/Qwen2.5-7B-Instruct"
-_LOCAL_POLICY = _REPO_ROOT / "models" / "checkpoints" / "Qwen--Qwen2.5-7B-Instruct"
+TRAIN_PROMPTS_PATH = "llm-and-vlm-projects/datasets/processed/alpaca_ppo_prompts"
+CHECKPOINTS_DIR = "llm-and-vlm-projects/models/checkpoints"
 
-MLFLOW_EXPERIMENT = "qwen25-rlhf-ppo"
+
+def load_reward_model() -> tuple[AutoModelForSequenceClassification, AutoTokenizer]:
+    import sys
+    if getattr(sys, "_cached_reward_model", None) is not None:
+        return sys._cached_reward_model, sys._cached_reward_tokenizer
+
+    reward_tokenizer = AutoTokenizer.from_pretrained(REWARD_MODEL_PATH)
+    reward_model = AutoModelForSequenceClassification.from_pretrained(
+        REWARD_MODEL_PATH,
+        num_labels=1,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+
+    reward_model.eval()
+    for param in reward_model.parameters():
+        param.requires_grad = False
+    n_params = sum(p.numel() for p in reward_model.parameters()) / 1e6
+    print(f"  Reward model loaded on device ({n_params:.1f}M params, frozen)")
+    sys._cached_reward_model = reward_model
+    sys._cached_reward_tokenizer = reward_tokenizer
+    return reward_model, reward_tokenizer 
+
+
+class RewardModelWrapper(nn.Module):
+
+    def __init__(self,):
+        super().__init__()
+        self.reward_model, self.reward_tokenizer = load_reward_model()
+        self.policy_tokenizer = AutoTokenizer.from_pretrained(POLICY_MODEL_PATH)
+        self.policy_tokenizer.padding_side = "left"
+        self.policy_tokenizer.pad_token = self.policy_tokenizer.eos_token
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.base_model_prefix = "dummy_backbone"
+        self.__dict__["dummy_backbone"] = self
+
+    def score(self, x):
+        return x
+
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.reward_model, name)
+
+    @torch.no_grad()
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        full_texts = self.policy_tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+        inputs = self.reward_tokenizer(
+            full_texts,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=REWARD_MODEL_LENGTH,
+        )
+        dev = next(self.reward_model.parameters()).device
+        inputs = {k: v.to(dev) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = self.reward_model(**inputs)
+            rewards = outputs.logits
+        
+        rewards_expanded = rewards.unsqueeze(1).expand(-1, input_ids.shape[1], -1)
+        
+        from types import SimpleNamespace
+        return SimpleNamespace(hidden_states=[rewards_expanded])
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Qwen2.5-7B RLHF PPO training")
     p.add_argument("--init-kl-coef", type=float, default=0.2,
-                    help="Initial KL penalty coefficient (0.0 for ablation)")
+                    help="Initial KL penalty coefficient")
     p.add_argument("--run-name", type=str, default="ppo-main",
                     help="Run name for MLflow / TensorBoard / checkpoint dir")
     p.add_argument("--num-steps", type=int, default=300,
@@ -73,37 +106,14 @@ def main() -> None:
     print(f" init_kl_coef={args.init_kl_coef}  steps={args.num_steps}")
     print("=" * 70)
 
-    # ── Verify 2 GPUs ─────────────────────────────────────────────────────────
-    n_gpus = torch.cuda.device_count()
-    if n_gpus < 2:
-        print(f"  ✗ Need 2 GPUs, found {n_gpus}. Use the smoke test for single-GPU.")
-        sys.exit(1)
-
-    for i in range(2):
-        name = torch.cuda.get_device_name(i)
-        vram = torch.cuda.get_device_properties(i).total_mem / 1e9
-        print(f"  GPU {i}: {name} ({vram:.1f} GB)")
-
-    model_path = str(_LOCAL_POLICY) if _LOCAL_POLICY.exists() else POLICY_MODEL_HUB
-    save_dir = CHECKPOINTS_DIR / f"qwen25-7b-{args.run_name}"
-    tb_log_base = os.environ.get("TB_LOG_BASE", str(_PROJECT_DIR / "logs"))
-    tb_log_dir = str(Path(tb_log_base) / f"tb-{args.run_name}")
-
     # ── 1. Tokenizer ──────────────────────────────────────────────────────────
-    print(f"\n[1/7] Loading tokenizer from {model_path}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    print(f"\n[1/7] Loading tokenizer from {POLICY_MODEL_PATH}...")
+    tokenizer = AutoTokenizer.from_pretrained(POLICY_MODEL_PATH)
+    tokenizer.padding_side = "left"
+    tokenizer.pad_token = tokenizer.eos_token
 
-    # CRITICAL FIX: Qwen2.5 tokenizer defaults to right padding.
-    # Causal-LM generation requires left padding.
-    if tokenizer.padding_side != "left":
-        print(f"  ⚠ Fixing padding_side: {tokenizer.padding_side} → left")
-        tokenizer.padding_side = "left"
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        print(f"  ⚠ Set pad_token = eos_token ({tokenizer.eos_token})")
-
-    # ── 2. Policy model on GPU 1 ──────────────────────────────────────────────
-    print(f"\n[2/7] Loading policy model (7B + LoRA + value head) → GPU 1...")
+    # ── 2. Policy model ───────────────────────────────────────────────────────
+    print(f"\n[2/7] Loading policy model (7B + LoRA)...")
     lora_config = LoraConfig(
         r=8,
         lora_alpha=16,
@@ -111,43 +121,37 @@ def main() -> None:
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         task_type="CAUSAL_LM",
     )
-
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        model_path,
-        peft_config=lora_config,
-        device_map={"": 1},
+    policy_model = AutoModelForCausalLM.from_pretrained(
+        POLICY_MODEL_PATH,
+        device_map="auto",
         torch_dtype=torch.float16,
     )
 
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in model.parameters())
-    print(f"  Trainable: {trainable / 1e6:.2f}M / {total / 1e6:.2f}M "
-          f"({100 * trainable / total:.2f}%)")
-
-    # ── 3. Reference model on GPU 0 (frozen, no LoRA) ─────────────────────────
-    print(f"\n[3/7] Loading reference model (7B, frozen, fp16) → GPU 0...")
-    ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        model_path,
-        device_map={"": 0},
+    # ── 3. Value model ────────────────────────────────────────────────────────
+    print(f"\n[3/7] Loading value model (7B + LoRA)...")
+    value_model = AutoModelForSequenceClassification.from_pretrained(
+        POLICY_MODEL_PATH,
+        num_labels=1,
+        device_map="auto",
         torch_dtype=torch.float16,
     )
-    ref_model.eval()
-    for p in ref_model.parameters():
-        p.requires_grad = False
+    value_model.config.pad_token_id = tokenizer.pad_token_id
 
-    ref_total = sum(p.numel() for p in ref_model.parameters()) / 1e6
-    print(f"  Reference model: {ref_total:.1f}M params (frozen)")
+    value_lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.05,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        task_type="SEQ_CLS",
+    )
+    value_model = get_peft_model(value_model, value_lora_config)
 
-    # ── 4. Reward model on GPU 0 ──────────────────────────────────────────────
-    print(f"\n[4/7] Loading reward model (DeBERTa) → GPU 0...")
-    reward_model, reward_tokenizer = load_reward_model(device=0)
+    # ── 4. Reward wrapper ─────────────────────────────────────────────────────
+    print(f"\n[4/7] Setting up Reward Model Wrapper...")
+    reward_wrapper = RewardModelWrapper()
 
     # ── 5. Dataset ────────────────────────────────────────────────────────────
     print(f"\n[5/7] Loading training prompts...")
-    if not TRAIN_PROMPTS_PATH.exists():
-        print("  ✗ Prompts not found. Run qwen25-ppo-dataset-prep.py first.")
-        sys.exit(1)
-
     ds = load_from_disk(str(TRAIN_PROMPTS_PATH))
     print(f"  Total prompts: {len(ds)}")
 
@@ -158,178 +162,57 @@ def main() -> None:
             max_length=128,
             padding=False,
         )
-        return {"input_ids": enc["input_ids"], "query": example["prompt"]}
+        return {"input_ids": enc["input_ids"]}
 
     ds = ds.map(tokenize_fn, remove_columns=["prompt"])
     ds.set_format("torch", columns=["input_ids"])
 
     # ── 6. PPO config + trainer ───────────────────────────────────────────────
     print(f"\n[6/7] Setting up PPOTrainer...")
+    save_dir = f"{CHECKPOINTS_DIR}/qwen25-7b-{args.run_name}"
+    tb_log_base = os.environ.get("TB_LOG_BASE", "job_run_scripts/logs")
+    tb_log_dir = f"{tb_log_base}/tb-{args.run_name}"
+
     ppo_config = PPOConfig(
-        model_name=model_path,
         learning_rate=1e-5,
-        batch_size=16,
-        mini_batch_size=4,
-        ppo_epochs=4,
+        per_device_train_batch_size=8,
+        mini_batch_size=2,
+        num_ppo_epochs=2,
         gamma=1.0,
         cliprange=0.2,
         cliprange_value=0.2,
         vf_coef=0.1,
-        init_kl_coef=args.init_kl_coef,
-        target_kl=6.0,
+        kl_coef=args.init_kl_coef,
         max_grad_norm=1.0,
-        log_with=None,  # we log manually
+        report_to="tensorboard",
+        logging_dir=tb_log_dir,
+        max_steps=args.num_steps,
     )
 
     ppo_trainer = PPOTrainer(
-        config=ppo_config,
-        model=model,
-        ref_model=ref_model,
-        tokenizer=tokenizer,
-        dataset=ds,
+        args=ppo_config,
+        processing_class=tokenizer,
+        model=policy_model,
+        ref_model=None,
+        reward_model=reward_wrapper,
+        train_dataset=ds,
+        value_model=value_model,
+        peft_config=lora_config,
     )
-
-    generation_kwargs = {
-        "max_new_tokens": 128,
-        "temperature": 0.7,
-        "top_p": 0.9,
-        "do_sample": True,
-        "pad_token_id": tokenizer.pad_token_id,
-    }
 
     # ── 7. Training loop ──────────────────────────────────────────────────────
     print(f"\n[7/7] Starting PPO training ({args.num_steps} steps)...\n")
-    os.makedirs(tb_log_dir, exist_ok=True)
-    tb_writer = SummaryWriter(log_dir=tb_log_dir)
-    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    mlflow.set_experiment("qwen25-rlhf-ppo")
 
     with mlflow.start_run(run_name=args.run_name):
-        mlflow.log_params({
-            "model": POLICY_MODEL_HUB,
-            "init_kl_coef": args.init_kl_coef,
-            "num_steps": args.num_steps,
-            "batch_size": 16,
-            "mini_batch_size": 4,
-            "ppo_epochs": 4,
-            "lora_r": 8,
-            "lora_alpha": 16,
-            "learning_rate": 1e-5,
-            "cliprange": 0.2,
-            "target_kl": 6.0,
-        })
+        ppo_trainer.train()
 
-        global_step = 0
-        epoch = 0
-
-        while global_step < args.num_steps:
-            epoch += 1
-            for batch in ppo_trainer.dataloader:
-                if global_step >= args.num_steps:
-                    break
-
-                t0 = time.time()
-                query_tensors: list[torch.Tensor] = batch["input_ids"]
-
-                # ── Generate responses ────────────────────────────────────────
-                response_tensors = ppo_trainer.generate(
-                    query_tensors, **generation_kwargs
-                )
-                # Ensure response-only (strip prompt if included)
-                response_tensors = [
-                    resp[len(query):]
-                    if len(resp) > len(query)
-                    else resp
-                    for query, resp in zip(query_tensors, response_tensors)
-                ]
-
-                # ── Decode for reward scoring ─────────────────────────────────
-                full_texts: list[str] = []
-                for q, r in zip(query_tensors, response_tensors):
-                    full = tokenizer.decode(
-                        torch.cat([q, r]), skip_special_tokens=True
-                    )
-                    full_texts.append(full)
-
-                # ── Compute rewards (GPU 0) ───────────────────────────────────
-                rewards = compute_rewards(
-                    full_texts, reward_model, reward_tokenizer, device=0
-                )
-
-                # ── PPO step ──────────────────────────────────────────────────
-                stats = ppo_trainer.step(
-                    list(query_tensors), list(response_tensors), rewards
-                )
-
-                # ── Extract metrics ───────────────────────────────────────────
-                reward_vals = [r.item() for r in rewards]
-                mean_reward = sum(reward_vals) / len(reward_vals)
-                kl = stats.get("objective/kl", 0.0)
-                policy_loss = stats.get("ppo/loss/policy", 0.0)
-                value_loss = stats.get("ppo/loss/value", 0.0)
-
-                # clip_fraction: fraction of samples where |ratio - 1| > cliprange
-                # PPOTrainer may expose this as "ppo/policy/clipfrac".
-                # If not present, we report 0 with a warning on the first step.
-                clip_frac = stats.get("ppo/policy/clipfrac", None)
-                if clip_frac is None:
-                    clip_frac = stats.get("ppo/policy/clipfraction", None)
-                if clip_frac is None:
-                    # Fallback: not directly available without modifying PPOTrainer internals.
-                    # Log NaN so it's visible that this metric is missing.
-                    if global_step == 0:
-                        print("  ⚠ clip_fraction not found in PPOTrainer stats — "
-                              "logging NaN. Check stats keys for your trl version.")
-                        print(f"    Available keys: {sorted(stats.keys())}")
-                    clip_frac = float("nan")
-
-                # ── Log to TensorBoard + MLflow ───────────────────────────────
-                metrics = {
-                    "mean_reward": mean_reward,
-                    "kl_divergence": kl if isinstance(kl, (int, float)) else 0.0,
-                    "policy_loss": policy_loss if isinstance(policy_loss, (int, float)) else 0.0,
-                    "value_loss": value_loss if isinstance(value_loss, (int, float)) else 0.0,
-                    "clip_fraction": clip_frac if isinstance(clip_frac, (int, float)) else 0.0,
-                }
-
-                for name, val in metrics.items():
-                    tb_writer.add_scalar(f"ppo/{name}", val, global_step)
-                mlflow.log_metrics(metrics, step=global_step)
-
-                # GPU memory
-                if torch.cuda.is_available():
-                    for gpu_idx in range(2):
-                        mem_gb = torch.cuda.memory_allocated(gpu_idx) / 1e9
-                        tb_writer.add_scalar(
-                            f"system/gpu{gpu_idx}_mem_gb", mem_gb, global_step
-                        )
-
-                dt = time.time() - t0
-                kl_str = f"{kl:.4f}" if isinstance(kl, (int, float)) else "?"
-                print(
-                    f"  Step {global_step:4d}/{args.num_steps} | "
-                    f"reward={mean_reward:+.4f} | KL={kl_str} | "
-                    f"policy_loss={policy_loss:.4f} | "
-                    f"{dt:.1f}s"
-                )
-
-                global_step += 1
-
-        # ── Save ──────────────────────────────────────────────────────────────
-        print(f"\nSaving LoRA adapter to {save_dir}...")
-        save_dir.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(str(save_dir))
-        tokenizer.save_pretrained(str(save_dir))
-        mlflow.log_artifacts(str(save_dir), artifact_path="lora-adapter")
-
-    tb_writer.close()
-
-    print("\n" + "=" * 70)
-    print(f" Training complete — {args.run_name}")
-    print(f"  Steps      : {global_step}")
-    print(f"  Checkpoint : {save_dir}")
-    print(f"  TensorBoard: tensorboard --logdir {tb_log_dir}")
-    print(f"  MLflow     : mlflow ui --port 5000")
-    print("=" * 70)
+    # Save LoRA adapter
+    print(f"\nSaving LoRA adapter to {save_dir}...")
+    os.makedirs(save_dir, exist_ok=True)
+    policy_model.save_pretrained(save_dir)
+    tokenizer.save_pretrained(save_dir)
+    print("✓ Model saved successfully.")
 
 
 if __name__ == "__main__":
